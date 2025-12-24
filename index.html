@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tab Audio Visualizer — Ribbon Field (No Glitch / Fullscreen)</title>
+  <title>Tab Audio Visualizer — Black Void Nebula (Thick + Soft)</title>
   <style>
-    html, body { margin:0; height:100%; background:#05060a; overflow:hidden; }
+    html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     #ui{
       position:fixed; top:16px; left:16px; z-index:10;
       display:flex; gap:10px; align-items:center;
@@ -27,7 +27,7 @@
   <div id="ui">
     <button id="startBtn">탭 오디오 연결</button>
     <button id="stopBtn" disabled>정지</button>
-    <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.10"></label>
+    <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.05"></label>
     <div class="hint">공유창에서 “탭 오디오 공유” 체크</div>
   </div>
 
@@ -35,29 +35,20 @@
 
   <script>
     const canvas  = document.getElementById('c');
-    const ctx2d   = canvas.getContext('2d');
+    const ctx     = canvas.getContext('2d');
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
     const gainEl   = document.getElementById('gain');
 
     let ac, analyser, srcNode, gainNode, data;
     let stream, rafId;
-
     let DPR = 1;
-
-    // ===== Glow buffer (for tasteful bloom only) =====
-    const glow = document.createElement('canvas');
-    const gctx = glow.getContext('2d');
 
     function resize(){
       DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
       canvas.width  = Math.floor(innerWidth * DPR);
       canvas.height = Math.floor(innerHeight * DPR);
-      ctx2d.setTransform(DPR,0,0,DPR,0,0);
-
-      glow.width  = canvas.width;
-      glow.height = canvas.height;
-      gctx.setTransform(DPR,0,0,DPR,0,0);
+      ctx.setTransform(DPR,0,0,DPR,0,0);
     }
     addEventListener('resize', resize);
     resize();
@@ -70,77 +61,76 @@
     function clamp01(x){ return Math.max(0, Math.min(1, x)); }
     function smoothstep(a,b,x){ x=clamp01((x-a)/(b-a)); return x*x*(3-2*x); }
 
-    // ===== Ribbons (spread across screen) =====
-    const P = [];
+    // ===== Visual State =====
+    const S = []; // strokes
     let t = 0;
 
-    // "예쁜" 팔레트: 저채도 + 부드러운 네온 (흰색 떡칠 방지)
+    // 고급 팔레트 (검은 배경에서 “예쁜 네온 안개”)
     const palette = [
-      [210, 26, 78],  // cool mist blue
-      [186, 28, 74],  // cyan-mint
-      [260, 22, 76],  // violet haze
-      [330, 22, 74],  // magenta fog
-      [35,  26, 76],  // warm pearl
+      [205, 60, 60], // steel blue
+      [185, 70, 55], // mint cyan
+      [265, 55, 62], // violet
+      [330, 55, 58], // magenta
+      [35,  70, 60], // warm amber pearl
     ];
 
-    function pickColor(seed, intensity){
+    function pickColor(seed, e){
       const c = palette[seed % palette.length];
-      const h = c[0] + ((seed*19)%14 - 7) + intensity*8;
-      const s = Math.min(40, c[1] + intensity*14);
-      const l = Math.max(62, c[2] - intensity*10);
+      const h = c[0] + ((seed*23)%18 - 9) + e*10;
+      const s = Math.min(85, c[1] + e*10);
+      const l = Math.min(70, c[2] + e*6);
       return [h,s,l];
     }
 
-    // 화면 전체에 고르게 뿌리기: 중앙 덩어리 제거 핵심
-    function spawnFullscreen(n, energy){
-      for(let i=0;i<n;i++){
+    // ✅ “콧털” 방지: 짧은 잔선 대신 "굵은 리본/브러시 스트로크"로
+    function spawnStrokes(n, e){
+      for (let i=0; i<n; i++){
         const seed = (Math.random()*1e9)|0;
 
-        // ✅ 화면 전체 균등 분포 + 약간의 가장자리 편향(더 시네마틱)
-        const edgeBias = 0.35; // 0=균등, 1=가장자리 몰림
-        let x = Math.random() * innerWidth;
-        let y = Math.random() * innerHeight;
-
-        if (Math.random() < edgeBias){
-          // 랜덤으로 한 변을 선택해서 가장자리에서 생성
+        // 화면 전체 + 가장자리 기원
+        let x = Math.random()*innerWidth;
+        let y = Math.random()*innerHeight;
+        if (Math.random() < 0.40){
           const side = (Math.random()*4)|0;
-          if (side===0){ x = Math.random()*innerWidth; y = -20; }
-          if (side===1){ x = innerWidth+20; y = Math.random()*innerHeight; }
-          if (side===2){ x = Math.random()*innerWidth; y = innerHeight+20; }
-          if (side===3){ x = -20; y = Math.random()*innerHeight; }
+          if (side===0){ x = Math.random()*innerWidth; y = -40; }
+          if (side===1){ x = innerWidth+40; y = Math.random()*innerHeight; }
+          if (side===2){ x = Math.random()*innerWidth; y = innerHeight+40; }
+          if (side===3){ x = -40; y = Math.random()*innerHeight; }
         }
 
-        // 초기 속도: 살짝 흐르는 바람 + 회전
+        // 긴 스트로크: 속도와 굵기는 하이/미드로
         const ang = Math.random()*Math.PI*2;
-        const speed = 0.25 + energy*1.6;
+        const speed = 0.35 + e*2.1;
         const vx = Math.cos(ang) * speed;
         const vy = Math.sin(ang) * speed;
 
-        const size = 0.7 + Math.random()*1.8 + energy*1.0;
-        const life = 70 + Math.random()*110 + energy*120;
+        const thickness = 1.6 + Math.random()*2.2 + e*2.2; // ✅ 굵게
+        const life = 120 + Math.random()*180 + e*220;      // ✅ 더 오래 살아서 “덩어리감”
+        const col = pickColor(seed, e);
 
-        const col  = pickColor(seed, energy);
-
-        P.push({ x,y,vx,vy,size,life,seed,col,age:0, trail:[[x,y]] });
+        S.push({
+          x,y,vx,vy,seed,life,age:0,
+          w: thickness,
+          col,
+          pts: [[x,y]],
+        });
       }
     }
 
-    // 벡터 필드: 화면 전체에서 살아있는 “흐름” 만들기
+    // 전역 흐름장: “털”처럼 흩날리는 난류를 줄이고, 큰 흐름을 줌
     function field(x,y,mid,high){
       const nx = (x/innerWidth  - 0.5) * 2;
       const ny = (y/innerHeight - 0.5) * 2;
 
-      // 저주파 흐름 + 고주파 찢김(하이가 많을수록)
-      const a = Math.sin(nx*2.6 + t*0.55) + Math.cos(ny*2.2 - t*0.45);
-      const b = Math.cos(nx*2.0 - t*0.40) - Math.sin(ny*2.8 + t*0.60);
+      const base = 0.28 + mid*0.95;
+      const shear = 0.10 + high*0.65;
 
-      const swirl = 0.35 + high*1.8;
-      const drift = 0.20 + mid*1.2;
+      const a = Math.sin(nx*1.6 + t*0.35) + Math.cos(ny*1.2 - t*0.28);
+      const b = Math.cos(nx*1.3 - t*0.22) - Math.sin(ny*1.7 + t*0.33);
 
-      // 중심으로 모으는 힘 ❌ 제거, 대신 “전역 흐름” + 약한 난류
       return {
-        fx: (a*swirl + 0.15*Math.sin(t + ny*3) * drift),
-        fy: (b*swirl + 0.15*Math.cos(t + nx*3) * drift),
+        fx: a*base + Math.sin(t + ny*2.4)*shear,
+        fy: b*base + Math.cos(t + nx*2.4)*shear,
       };
     }
 
@@ -150,122 +140,105 @@
 
       const mid  = energyFromBins(data, 18, 80);
       const high = energyFromBins(data, 80, 180);
-
       const g = parseFloat(gainEl.value);
-      const energy = clamp01((mid*0.70 + high*0.90) * g);
 
-      // ✅ 배경이 회색으로 뜨는 문제: 알파를 더 낮춰 “검은 잔상” 유지
-      ctx2d.fillStyle = `rgba(5,6,10,${0.06 + (1-energy)*0.06})`;
-      ctx2d.fillRect(0,0,innerWidth,innerHeight);
+      const energy = clamp01((mid*0.75 + high*0.95) * g);
+
+      // ✅ 배경: "무조건 검은색" + 아주 약한 잔상만
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgba(0,0,0,${0.28 + (1-energy)*0.10})`;
+      ctx.fillRect(0,0,innerWidth,innerHeight);
 
       t += 0.016;
 
-      // ✅ 홍수 과다 방지: 소리 커져도 폭발하지 않게 캡
-      const emit = Math.floor(6 + 32 * smoothstep(0.08, 0.60, energy));
-      spawnFullscreen(emit, energy);
+      // ✅ 홍수는 하되 “화이트아웃”/“털” 방지: 양은 적당 + 스트로크 길이로 밀도 만들기
+      const emit = Math.floor(3 + 14 * smoothstep(0.10, 0.70, energy));
+      spawnStrokes(emit, energy);
 
-      // ✅ 파티클 수 상한: 과하면 덩어리 + 흰색 떡칠
-      if (P.length > 1400) P.splice(0, P.length - 1400);
+      // cap
+      if (S.length > 520) S.splice(0, S.length - 520);
 
-      // 리본(이중 스트로크) — but “whiteout” 방지로 훨씬 절제
-      ctx2d.globalCompositeOperation = "lighter";
+      // 오디오로 blur 펌핑(요구)
+      const blurPx = 0.6 + smoothstep(0.12, 0.80, energy) * 4.5;
 
-      for (let i=P.length-1; i>=0; i--){
-        const p = P[i];
-        p.age++;
+      for (let i=S.length-1; i>=0; i--){
+        const s = S[i];
+        s.age++;
 
-        const f = field(p.x, p.y, mid, high);
-        const jitter = (0.35 + high*0.65) * (Math.sin(p.seed*0.00001 + t*7) * 0.35);
-
-        p.vx += f.fx*0.08 + jitter*0.06;
-        p.vy += f.fy*0.08 - jitter*0.06;
-
-        p.vx *= 0.986;
-        p.vy *= 0.986;
-
-        p.x += p.vx;
-        p.y += p.vy;
-
-        // 트레일
-        p.trail.push([p.x, p.y]);
-        const maxTrail = Math.floor(14 + energy*22);
-        if (p.trail.length > maxTrail) p.trail.shift();
-
-        // life / bounds
-        const k = 1 - (p.age / p.life);
-        if (k <= 0 || p.x<-260 || p.x>innerWidth+260 || p.y<-260 || p.y>innerHeight+260){
-          P.splice(i,1);
+        const k = 1 - (s.age / s.life);
+        if (k <= 0 || s.x<-420 || s.x>innerWidth+420 || s.y<-420 || s.y>innerHeight+420){
+          S.splice(i,1);
           continue;
         }
 
-        const [h,s,l] = p.col;
+        const f = field(s.x, s.y, mid, high);
 
-        // ✅ 흰색 떡칠 방지: 전체 알파 낮추고, 고음에서만 살짝 올라가게
-        const alpha = (0.018 + energy*0.055) * (k*k);
+        // 난류 줄이고 "큰 흐름 + 약간의 비틀림"
+        const twist = (high*0.25) * Math.sin(s.seed*0.00001 + t*2.2);
 
-        const tr = p.trail;
+        s.vx += f.fx*0.10 + twist*0.25;
+        s.vy += f.fy*0.10 - twist*0.25;
 
-        // outer(소프트 헤이즈)
-        const outerW = (1.0 + p.size*0.8) * (0.8 + energy*0.9);
-        ctx2d.strokeStyle = `hsla(${h},${s}%,${Math.min(90, l+10)}%,${alpha*0.35})`;
-        ctx2d.lineWidth = outerW;
-        ctx2d.lineCap = "round";
-        ctx2d.lineJoin = "round";
-        ctx2d.beginPath();
-        for (let j=0; j<tr.length; j++){
-          const [tx,ty] = tr[j];
-          if (j===0) ctx2d.moveTo(tx,ty);
-          else ctx2d.lineTo(tx,ty);
+        s.vx *= 0.989;
+        s.vy *= 0.989;
+
+        s.x += s.vx;
+        s.y += s.vy;
+
+        // pts
+        s.pts.push([s.x, s.y]);
+        const maxPts = 22 + Math.floor(energy*22);
+        if (s.pts.length > maxPts) s.pts.shift();
+
+        const [h,ss,l] = s.col;
+
+        // ✅ 흰색 방지: 밝기(l)를 낮게 유지 + 알파 제한
+        const alpha = (0.05 + energy*0.12) * (k*k);
+        const outerW = (s.w * (1.2 + energy*0.8));
+        const innerW = Math.max(1.0, outerW * 0.55);
+
+        // ---- Outer soft brush (glare 느낌) ----
+        ctx.save();
+        ctx.filter = `blur(${blurPx}px)`;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.shadowColor = `hsla(${h},${ss}%,${Math.min(68,l)}%,${alpha*0.55})`;
+        ctx.shadowBlur = 14 + energy*28;
+
+        ctx.strokeStyle = `hsla(${h},${ss}%,${Math.min(66,l+2)}%,${alpha*0.28})`;
+        ctx.lineWidth = outerW;
+
+        ctx.beginPath();
+        for (let j=0; j<s.pts.length; j++){
+          const [px,py] = s.pts[j];
+          if (j===0) ctx.moveTo(px,py);
+          else ctx.lineTo(px,py);
         }
-        ctx2d.stroke();
+        ctx.stroke();
 
-        // inner(샤프 코어)
-        const innerW = Math.max(0.65, outerW * 0.45);
-        ctx2d.strokeStyle = `hsla(${h},${s}%,${l}%,${alpha})`;
-        ctx2d.lineWidth = innerW;
-        ctx2d.beginPath();
-        for (let j=0; j<tr.length; j++){
-          const [tx,ty] = tr[j];
-          if (j===0) ctx2d.moveTo(tx,ty);
-          else ctx2d.lineTo(tx,ty);
+        // ---- Inner core (선명한 리본) ----
+        ctx.filter = "none";
+        ctx.shadowBlur = 0;
+
+        ctx.strokeStyle = `hsla(${h},${ss}%,${Math.min(62,l-2)}%,${alpha*0.75})`;
+        ctx.lineWidth = innerW;
+
+        ctx.beginPath();
+        for (let j=0; j<s.pts.length; j++){
+          const [px,py] = s.pts[j];
+          if (j===0) ctx.moveTo(px,py);
+          else ctx.lineTo(px,py);
         }
-        ctx2d.stroke();
+        ctx.stroke();
+
+        ctx.restore();
       }
-
-      ctx2d.globalCompositeOperation = "source-over";
-
-      // ===== Tasteful Bloom (no glitch, no mosh) =====
-      // 글래어는 유지하되: 흰색화 방지로 매우 절제 + 오디오로 블러 펌핑
-      const m = smoothstep(0.10, 0.70, energy);
-      const blurPx = 0.8 + m*3.2;
-      const glowAlpha = 0.025 + m*0.08;
-
-      gctx.clearRect(0,0,innerWidth,innerHeight);
-      gctx.globalAlpha = 1.0;
-      gctx.drawImage(canvas, 0, 0);
-
-      // bright-ish pass (cheap)
-      gctx.globalCompositeOperation = "source-in";
-      gctx.fillStyle = "rgba(255,255,255,0.65)";
-      gctx.fillRect(0,0,innerWidth,innerHeight);
-      gctx.globalCompositeOperation = "source-over";
-
-      ctx2d.save();
-      ctx2d.globalCompositeOperation = "screen";
-      ctx2d.globalAlpha = glowAlpha;
-      ctx2d.filter = `blur(${blurPx}px)`;
-      ctx2d.drawImage(glow, 0, 0, innerWidth, innerHeight);
-      ctx2d.filter = "none";
-      ctx2d.restore();
     }
 
-    // ✅ 오디오 캡처는 안정 버전 유지
+    // ✅ 오디오 캡처: 안정 버전 유지
     async function start(){
       try{
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true
-        });
+        stream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
 
         ac = new (window.AudioContext || window.webkitAudioContext)();
         analyser = ac.createAnalyser();
@@ -289,8 +262,9 @@
 
         if (ac.state === 'suspended') await ac.resume();
 
-        ctx2d.fillStyle = '#05060a';
-        ctx2d.fillRect(0,0,innerWidth,innerHeight);
+        // ✅ 강제 블랙 클리어
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0,0,innerWidth,innerHeight);
 
         draw();
       } catch (e){
@@ -303,22 +277,16 @@
       if (rafId) cancelAnimationFrame(rafId);
       rafId = null;
 
-      if (stream){
-        stream.getTracks().forEach(t => t.stop());
-        stream = null;
-      }
-      if (ac){
-        ac.close();
-        ac = null;
-      }
+      if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+      if (ac){ ac.close(); ac = null; }
 
-      P.length = 0;
+      S.length = 0;
 
       startBtn.disabled = false;
       stopBtn.disabled = true;
 
-      ctx2d.fillStyle = '#05060a';
-      ctx2d.fillRect(0,0,innerWidth,innerHeight);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0,0,innerWidth,innerHeight);
     }
 
     startBtn.addEventListener('click', start);
