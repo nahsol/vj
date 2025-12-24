@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Tab Audio Visualizer</title>
+  <style>
+    html, body { margin:0; height:100%; background:#05060a; overflow:hidden; }
+    #ui {
+      position:fixed; top:16px; left:16px; z-index:10;
+      display:flex; gap:10px; align-items:center;
+      background:rgba(10,12,18,.55); border:1px solid rgba(255,255,255,.08);
+      padding:10px 12px; border-radius:14px; backdrop-filter: blur(8px);
+      color:#e8eaf0; font: 14px/1.2 system-ui, -apple-system, Segoe UI, Roboto;
+    }
+    button {
+      border:0; border-radius:12px; padding:10px 12px;
+      background:#1b2140; color:#fff; cursor:pointer;
+    }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    input[type="range"]{ width:140px; }
+    canvas { display:block; width:100vw; height:100vh; }
+    .hint { opacity:.8; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <button id="startBtn">탭 오디오 연결</button>
+    <button id="stopBtn" disabled>정지</button>
+    <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.1"></label>
+    <div class="hint">공유창에서 “탭 오디오 공유” 체크!</div>
+  </div>
+  <canvas id="c"></canvas>
+
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx2d = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn  = document.getElementById('stopBtn');
+    const gainEl   = document.getElementById('gain');
+
+    let ac, analyser, srcNode, gainNode, data;
+    let stream, rafId;
+
+    function resize(){
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      canvas.width = Math.floor(innerWidth * dpr);
+      canvas.height = Math.floor(innerHeight * dpr);
+      ctx2d.setTransform(dpr,0,0,dpr,0,0);
+    }
+    addEventListener('resize', resize);
+    resize();
+
+    function energyFromBins(arr, start, end){
+      let sum = 0;
+      for (let i=start; i<end; i++) sum += arr[i];
+      return sum / (end - start) / 255; // 0..1
+    }
+
+    function draw(){
+      rafId = requestAnimationFrame(draw);
+
+      analyser.getByteFrequencyData(data);
+
+      // bands (rough)
+      const bass = energyFromBins(data, 2, 18);
+      const mid  = energyFromBins(data, 18, 80);
+      const high = energyFromBins(data, 80, 180);
+
+      const g = parseFloat(gainEl.value);
+
+      // background fade (trail)
+      ctx2d.fillStyle = `rgba(5,6,10,0.16)`;
+      ctx2d.fillRect(0,0,innerWidth,innerHeight);
+
+      const cx = innerWidth/2, cy = innerHeight/2;
+
+      // Kick-ish pulse circle
+      const r = 60 + Math.pow(bass * g, 0.7) * 320;
+      ctx2d.beginPath();
+      ctx2d.arc(cx, cy, r, 0, Math.PI*2);
+      ctx2d.strokeStyle = `rgba(240,245,255,${0.10 + bass*0.35})`;
+      ctx2d.lineWidth = 2 + bass*10*g;
+      ctx2d.stroke();
+
+      // Spectrum bars (bottom)
+      const bars = 128;
+      const step = Math.floor(data.length / bars);
+      const w = innerWidth / bars;
+
+      for (let i=0; i<bars; i++){
+        const v = data[i*step] / 255;
+        const h = Math.pow(v, 1.3) * innerHeight * 0.45 * g;
+
+        // subtle “neon-ish” look without hard-coded fancy palettes
+        const a = 0.12 + v*0.45;
+        ctx2d.fillStyle = `rgba(230,235,255,${a})`;
+        ctx2d.fillRect(i*w, innerHeight - h, Math.max(1, w-2), h);
+      }
+
+      // little “glitch dust”
+      const dust = Math.floor(40 + high*160*g);
+      for (let i=0; i<dust; i++){
+        const x = Math.random()*innerWidth;
+        const y = Math.random()*innerHeight;
+        const s = 1 + Math.random()*2.2;
+        const a = 0.05 + Math.random()*0.18 + high*0.25;
+        ctx2d.fillStyle = `rgba(255,255,255,${a})`;
+        ctx2d.fillRect(x,y,s,s);
+      }
+
+      // center text vibe
+      ctx2d.fillStyle = `rgba(230,235,255,${0.08 + mid*0.18})`;
+      ctx2d.font = '600 14px system-ui, -apple-system, Segoe UI';
+      ctx2d.fillText(`bass ${bass.toFixed(2)}  mid ${mid.toFixed(2)}  high ${high.toFixed(2)}`, 18, innerHeight-18);
+    }
+
+    async function start(){
+      try{
+        // 탭 오디오 캡처: 사용자 선택 + 권한 필수
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true, // 필요 없으면 false도 되지만, 브라우저마다 오디오만이 제한될 수 있음
+          audio: true
+        });
+
+        ac = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = ac.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.82;
+
+        gainNode = ac.createGain();
+        gainNode.gain.value = 1.0;
+
+        srcNode = ac.createMediaStreamSource(stream);
+        srcNode.connect(gainNode);
+        gainNode.connect(analyser);
+
+        data = new Uint8Array(analyser.frequencyBinCount);
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+
+        // 스트림이 끊기면 자동 종료
+        const [vtrack] = stream.getVideoTracks();
+        if (vtrack) vtrack.onended = stop;
+
+        // 사파리/크롬 자동재생 정책 회피용: 사용자 제스처 이후라 OK
+        if (ac.state === 'suspended') await ac.resume();
+
+        draw();
+      } catch (e){
+        console.error(e);
+        alert('캡처를 시작하지 못했어. 공유창에서 "탭 오디오 공유" 체크했고, 탭을 선택했는지 확인해줘!');
+      }
+    }
+
+    function stop(){
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+
+      if (stream){
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      if (ac){
+        ac.close();
+        ac = null;
+      }
+
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+
+      // clear screen
+      ctx2d.fillStyle = '#05060a';
+      ctx2d.fillRect(0,0,innerWidth,innerHeight);
+    }
+
+    startBtn.addEventListener('click', start);
+    stopBtn.addEventListener('click', stop);
+  </script>
+</body>
+</html>
