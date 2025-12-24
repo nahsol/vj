@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tab Audio Visualizer — Fireflies (Black + Blur)</title>
+  <title>Tab Audio Visualizer — Firefly Strobes (No Mosh)</title>
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     #ui{
@@ -13,10 +13,7 @@
       padding:10px 12px; border-radius:14px; backdrop-filter: blur(8px);
       color:#e8eaf0; font: 14px/1.2 system-ui, -apple-system, Segoe UI, Roboto;
     }
-    button{
-      border:0; border-radius:12px; padding:10px 12px;
-      background:#1b2140; color:#fff; cursor:pointer;
-    }
+    button{ border:0; border-radius:12px; padding:10px 12px; background:#1b2140; color:#fff; cursor:pointer; }
     button:disabled{ opacity:.5; cursor:not-allowed; }
     input[type="range"]{ width:160px; }
     canvas{ display:block; width:100vw; height:100vh; }
@@ -45,8 +42,7 @@
     let DPR = 1;
 
     function resize(){
-      // 성능 위해 DPR 상한 낮춤
-      DPR = Math.max(1, Math.min(1.5, window.devicePixelRatio || 1));
+      DPR = Math.max(1, Math.min(1.5, window.devicePixelRatio || 1)); // 성능
       canvas.width  = Math.floor(innerWidth * DPR);
       canvas.height = Math.floor(innerHeight * DPR);
       ctx.setTransform(DPR,0,0,DPR,0,0);
@@ -62,47 +58,55 @@
     function clamp01(x){ return Math.max(0, Math.min(1, x)); }
     function smoothstep(a,b,x){ x=clamp01((x-a)/(b-a)); return x*x*(3-2*x); }
 
-    // ===== Fireflies =====
+    // ===== Firefly Strobes (true blink) =====
     const flies = [];
-    const MAX_FLIES = 180; // ✅ 성능 우선
+    const MAX_FLIES = 140;     // 성능 안정
     let t = 0;
 
-    // 예쁜 색(촌스런 빨강/파랑 금지): 민트/바이올렛/웜 펄 계열
+    // 예쁜 색: 민트/라일락/바이올렛/웜펄
     const fireColors = [
-      [185, 80, 65], // mint
-      [210, 70, 66], // cool blue-lavender
-      [265, 70, 68], // violet
-      [330, 70, 66], // magenta
-      [35,  85, 66], // warm pearl
+      [185, 82, 62], // mint
+      [210, 70, 62], // cool lilac-blue
+      [265, 72, 64], // violet
+      [330, 70, 62], // magenta
+      [35,  85, 62], // warm pearl
     ];
-
     function pickColor(){
       const c = fireColors[(Math.random()*fireColors.length)|0];
-      const h = c[0] + (Math.random()*10 - 5);
-      const s = c[1] + (Math.random()*8  - 4);
-      const l = c[2] + (Math.random()*8  - 4);
-      return [h,s,l];
+      return [
+        c[0] + (Math.random()*10 - 5),
+        c[1] + (Math.random()*10 - 5),
+        c[2] + (Math.random()*10 - 5),
+      ];
     }
 
-    function newFly(boost){
+    function newFly(){
       const [h,s,l] = pickColor();
       return {
         x: Math.random()*innerWidth,
         y: Math.random()*innerHeight,
-        vx: (Math.random()-0.5) * (0.15 + boost*0.9),
-        vy: (Math.random()-0.5) * (0.15 + boost*0.9),
-        baseR: 0.8 + Math.random()*1.8,
+        vx: (Math.random()-0.5) * 0.25,
+        vy: (Math.random()-0.5) * 0.25,
+        baseR: 0.8 + Math.random()*1.6,
         h,s,l,
-        phase: Math.random()*Math.PI*2,     // 깜빡임 위상
-        freq:  0.6 + Math.random()*1.1,     // 기본 깜빡임 속도
-        life:  80 + Math.random()*220,      // 대충 살아있다 사라짐
+        life:  120 + Math.random()*220,
         age: 0,
-        burst: 0,                           // 오디오로 번쩍
+
+        // ✅ "번쩍"을 만드는 핵심: 꺼짐 상태가 기본, 가끔 펄스가 터짐
+        pulse: 0,          // 현재 번쩍 강도(0이면 완전 꺼짐)
+        cooldown: Math.random()*60, // 다음 번쩍까지 남은 프레임
       };
     }
 
-    function ensureFlies(n, boost){
-      while (flies.length < n) flies.push(newFly(boost));
+    function ensureFlies(n){
+      while (flies.length < n) flies.push(newFly());
+    }
+
+    function warpWrap(f){
+      if (f.x < -40) f.x = innerWidth + 40;
+      if (f.x > innerWidth + 40) f.x = -40;
+      if (f.y < -40) f.y = innerHeight + 40;
+      if (f.y > innerHeight + 40) f.y = -40;
     }
 
     function draw(){
@@ -111,97 +115,99 @@
 
       const mid  = energyFromBins(data, 18, 80);
       const high = energyFromBins(data, 80, 180);
-
       const g = parseFloat(gainEl.value);
-      const energy = clamp01((mid*0.75 + high*0.95) * g);
-      const m = smoothstep(0.10, 0.75, energy);
+
+      // 킥 무시: 하이/미드 중심
+      const energy = clamp01((mid*0.75 + high*1.00) * g);
+      const e = smoothstep(0.08, 0.75, energy);
 
       t += 0.016;
 
-      // ✅ 배경은 "무조건 검정" + 약간의 잔상(너무 밝아지지 않게)
+      // ✅ 배경은 매 프레임 "진짜 검정"으로 유지 (잔상/모쉬 없음)
       ctx.globalCompositeOperation = "source-over";
-      ctx.fillStyle = `rgba(0,0,0,${0.35 + (1-m)*0.12})`;
+      ctx.fillStyle = "#000";
       ctx.fillRect(0,0,innerWidth,innerHeight);
 
-      // 파티클(반딧불이) 수: 음악이 차오를수록 조금 늘기
-      const target = Math.floor(70 + m*90);   // 70~160
-      ensureFlies(Math.min(MAX_FLIES, target), m);
+      // 개체 수: 음악 올라가면 조금 늘리기
+      const target = Math.floor(70 + e*60); // 70~130
+      ensureFlies(Math.min(MAX_FLIES, target));
 
-      // ✅ 블러 “좀 제발”: 전체 블러 강도를 음악으로 펌핑
-      const blurPx = 2 + m*10;                // 2~12
-      ctx.filter = `blur(${blurPx}px)`;
+      // ✅ 블러: 번쩍이 강할 때만 두껍게
+      // (평소엔 거의 안 보이니까 “번쩍”이 더 극적으로 보임)
+      const baseBlur = 1.0 + e*4.0;
 
-      // 합성은 screen만 아주 약하게(화이트아웃 방지: 알파로 제어)
-      // screen은 불빛에만 사용하되, 배경은 이미 검정이라 안전
+      // 합성: screen은 “불빛만”에 적용 (배경은 black)
       ctx.globalCompositeOperation = "screen";
 
       for (let i=flies.length-1; i>=0; i--){
         const f = flies[i];
         f.age++;
-
-        // 오래된 애는 교체
         if (f.age > f.life){
-          flies[i] = newFly(m);
+          flies[i] = newFly();
           continue;
         }
 
-        // 오디오가 올라가면 "갑자기 움직임" 확률 증가
-        const twitchProb = 0.004 + m*0.03;
-        if (Math.random() < twitchProb){
-          f.vx += (Math.random()-0.5) * (0.9 + m*2.0);
-          f.vy += (Math.random()-0.5) * (0.9 + m*2.0);
-          f.burst = Math.min(1, f.burst + 0.7); // 순간 번쩍
+        // 움직임: 기본은 느림, 음악 올라가면 "갑자기 튀기" 이벤트 증가
+        const twitch = 0.002 + e*0.020;
+        if (Math.random() < twitch){
+          f.vx += (Math.random()-0.5) * (1.2 + e*2.0);
+          f.vy += (Math.random()-0.5) * (1.2 + e*2.0);
+          // 튈 때 같이 한 번 번쩍
+          f.pulse = Math.max(f.pulse, 0.7 + e*0.6);
         }
 
-        // 부드러운 드리프트 + 약간의 감쇠
-        f.vx += (Math.sin(t*0.9 + f.phase)*0.004) * (0.5 + m*1.6);
-        f.vy += (Math.cos(t*0.8 + f.phase)*0.004) * (0.5 + m*1.6);
-        f.vx *= 0.94;
-        f.vy *= 0.94;
+        // 드리프트
+        f.vx += Math.sin(t*0.7 + f.x*0.002)*0.01;
+        f.vy += Math.cos(t*0.6 + f.y*0.002)*0.01;
+        f.vx *= 0.94; f.vy *= 0.94;
+        f.x += f.vx; f.y += f.vy;
+        warpWrap(f);
 
-        f.x += f.vx;
-        f.y += f.vy;
+        // ✅ 진짜 "번쩍": 펄스 기반 (평소엔 거의 0)
+        // - e가 높을수록 번쩍이 더 자주, 더 강하게
+        f.cooldown -= (0.8 + e*1.8);
+        if (f.cooldown <= 0){
+          // 번쩍 강도: 하이가 많을수록 더 강함
+          const strength = clamp01(0.35 + e*0.85);
+          f.pulse = Math.max(f.pulse, strength);
+          // 다음 번쩍까지: 음악이 높을수록 간격이 짧아짐
+          const minCd = 8  - e*4;     // 4~8
+          const maxCd = 80 - e*45;    // 35~80
+          f.cooldown = minCd + Math.random()*Math.max(6, maxCd);
+        }
 
-        // 화면 밖으로 나가면 워프
-        if (f.x < -40) f.x = innerWidth + 40;
-        if (f.x > innerWidth + 40) f.x = -40;
-        if (f.y < -40) f.y = innerHeight + 40;
-        if (f.y > innerHeight + 40) f.y = -40;
+        // 펄스는 빠르게 꺼졌다 켜지는 맛: 공격 빠르고 감쇠 빠름
+        // (strobe 느낌)
+        f.pulse *= (0.72 - e*0.10);  // e 높을수록 더 빨리 사라져 "번쩍" 느낌 강화
+        if (f.pulse < 0.01) f.pulse = 0;
 
-        // 깜빡임: 기본 싸인 + high에서 더 촘촘하게(하이/미드 반영)
-        const blink = 0.5 + 0.5 * Math.sin(f.phase + t*(f.freq + high*2.6));
-        const shimmer = smoothstep(0.35, 1.0, blink); // 꺼졌다 켜졌다 확실하게
+        if (f.pulse <= 0) continue; // ✅ 꺼져있으면 아예 안 그려서 “번쩍”만 남김
 
-        // burst는 서서히 사라짐
-        f.burst *= 0.90;
+        const intensity = f.pulse;
 
-        // 밝기/크기: 오디오 반영 (하이-미드에 반응)
-        const intensity = clamp01( (shimmer*0.55 + f.burst*0.7) * (0.35 + m*1.15) );
-        const r = f.baseR * (1.0 + intensity*3.0);
+        const r = f.baseR * (1.0 + intensity*10.0); // 번쩍 때 커짐
+        const L = Math.min(78, f.l + intensity*14);
 
-        // 색: 너무 하얘지지 않게 L 제한
-        const L = Math.min(72, f.l + intensity*10);
+        // 블러는 번쩍 강도에 따라 가변
+        ctx.filter = `blur(${baseBlur + intensity*10}px)`;
 
-        // 실제 그리기(선 없음, 점/글로우만)
-        // 중심 코어
-        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.10 + intensity*0.22})`;
+        // 3중 글로우: 코어/글로우/헤이즈
+        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.10 + intensity*0.25})`;
         ctx.beginPath();
         ctx.arc(f.x, f.y, r, 0, Math.PI*2);
         ctx.fill();
 
-        // 외곽 글로우(두겹)
-        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.05 + intensity*0.12})`;
+        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.06 + intensity*0.16})`;
         ctx.beginPath();
-        ctx.arc(f.x, f.y, r*2.1, 0, Math.PI*2);
+        ctx.arc(f.x, f.y, r*2.2, 0, Math.PI*2);
         ctx.fill();
 
-        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.03 + intensity*0.08})`;
+        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.04 + intensity*0.12})`;
         ctx.beginPath();
-        ctx.arc(f.x, f.y, r*3.6, 0, Math.PI*2);
+        ctx.arc(f.x, f.y, r*4.0, 0, Math.PI*2);
         ctx.fill();
       }
 
-      // 필터 원복
       ctx.filter = "none";
       ctx.globalCompositeOperation = "source-over";
     }
@@ -233,7 +239,6 @@
 
         if (ac.state === 'suspended') await ac.resume();
 
-        // 강제 블랙 클리어
         ctx.fillStyle = '#000';
         ctx.fillRect(0,0,innerWidth,innerHeight);
 
