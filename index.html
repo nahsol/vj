@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tab Audio Visualizer — Black Void Nebula (Thick + Soft)</title>
+  <title>Tab Audio Visualizer — Fireflies (Black + Blur)</title>
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     #ui{
@@ -27,7 +27,7 @@
   <div id="ui">
     <button id="startBtn">탭 오디오 연결</button>
     <button id="stopBtn" disabled>정지</button>
-    <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.05"></label>
+    <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.10"></label>
     <div class="hint">공유창에서 “탭 오디오 공유” 체크</div>
   </div>
 
@@ -45,7 +45,8 @@
     let DPR = 1;
 
     function resize(){
-      DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      // 성능 위해 DPR 상한 낮춤
+      DPR = Math.max(1, Math.min(1.5, window.devicePixelRatio || 1));
       canvas.width  = Math.floor(innerWidth * DPR);
       canvas.height = Math.floor(innerHeight * DPR);
       ctx.setTransform(DPR,0,0,DPR,0,0);
@@ -61,77 +62,47 @@
     function clamp01(x){ return Math.max(0, Math.min(1, x)); }
     function smoothstep(a,b,x){ x=clamp01((x-a)/(b-a)); return x*x*(3-2*x); }
 
-    // ===== Visual State =====
-    const S = []; // strokes
+    // ===== Fireflies =====
+    const flies = [];
+    const MAX_FLIES = 180; // ✅ 성능 우선
     let t = 0;
 
-    // 고급 팔레트 (검은 배경에서 “예쁜 네온 안개”)
-    const palette = [
-      [205, 60, 60], // steel blue
-      [185, 70, 55], // mint cyan
-      [265, 55, 62], // violet
-      [330, 55, 58], // magenta
-      [35,  70, 60], // warm amber pearl
+    // 예쁜 색(촌스런 빨강/파랑 금지): 민트/바이올렛/웜 펄 계열
+    const fireColors = [
+      [185, 80, 65], // mint
+      [210, 70, 66], // cool blue-lavender
+      [265, 70, 68], // violet
+      [330, 70, 66], // magenta
+      [35,  85, 66], // warm pearl
     ];
 
-    function pickColor(seed, e){
-      const c = palette[seed % palette.length];
-      const h = c[0] + ((seed*23)%18 - 9) + e*10;
-      const s = Math.min(85, c[1] + e*10);
-      const l = Math.min(70, c[2] + e*6);
+    function pickColor(){
+      const c = fireColors[(Math.random()*fireColors.length)|0];
+      const h = c[0] + (Math.random()*10 - 5);
+      const s = c[1] + (Math.random()*8  - 4);
+      const l = c[2] + (Math.random()*8  - 4);
       return [h,s,l];
     }
 
-    // ✅ “콧털” 방지: 짧은 잔선 대신 "굵은 리본/브러시 스트로크"로
-    function spawnStrokes(n, e){
-      for (let i=0; i<n; i++){
-        const seed = (Math.random()*1e9)|0;
-
-        // 화면 전체 + 가장자리 기원
-        let x = Math.random()*innerWidth;
-        let y = Math.random()*innerHeight;
-        if (Math.random() < 0.40){
-          const side = (Math.random()*4)|0;
-          if (side===0){ x = Math.random()*innerWidth; y = -40; }
-          if (side===1){ x = innerWidth+40; y = Math.random()*innerHeight; }
-          if (side===2){ x = Math.random()*innerWidth; y = innerHeight+40; }
-          if (side===3){ x = -40; y = Math.random()*innerHeight; }
-        }
-
-        // 긴 스트로크: 속도와 굵기는 하이/미드로
-        const ang = Math.random()*Math.PI*2;
-        const speed = 0.35 + e*2.1;
-        const vx = Math.cos(ang) * speed;
-        const vy = Math.sin(ang) * speed;
-
-        const thickness = 1.6 + Math.random()*2.2 + e*2.2; // ✅ 굵게
-        const life = 120 + Math.random()*180 + e*220;      // ✅ 더 오래 살아서 “덩어리감”
-        const col = pickColor(seed, e);
-
-        S.push({
-          x,y,vx,vy,seed,life,age:0,
-          w: thickness,
-          col,
-          pts: [[x,y]],
-        });
-      }
+    function newFly(boost){
+      const [h,s,l] = pickColor();
+      return {
+        x: Math.random()*innerWidth,
+        y: Math.random()*innerHeight,
+        vx: (Math.random()-0.5) * (0.15 + boost*0.9),
+        vy: (Math.random()-0.5) * (0.15 + boost*0.9),
+        baseR: 0.8 + Math.random()*1.8,
+        h,s,l,
+        phase: Math.random()*Math.PI*2,     // 깜빡임 위상
+        freq:  0.6 + Math.random()*1.1,     // 기본 깜빡임 속도
+        life:  80 + Math.random()*220,      // 대충 살아있다 사라짐
+        age: 0,
+        burst: 0,                           // 오디오로 번쩍
+      };
     }
 
-    // 전역 흐름장: “털”처럼 흩날리는 난류를 줄이고, 큰 흐름을 줌
-    function field(x,y,mid,high){
-      const nx = (x/innerWidth  - 0.5) * 2;
-      const ny = (y/innerHeight - 0.5) * 2;
-
-      const base = 0.28 + mid*0.95;
-      const shear = 0.10 + high*0.65;
-
-      const a = Math.sin(nx*1.6 + t*0.35) + Math.cos(ny*1.2 - t*0.28);
-      const b = Math.cos(nx*1.3 - t*0.22) - Math.sin(ny*1.7 + t*0.33);
-
-      return {
-        fx: a*base + Math.sin(t + ny*2.4)*shear,
-        fy: b*base + Math.cos(t + nx*2.4)*shear,
-      };
+    function ensureFlies(n, boost){
+      while (flies.length < n) flies.push(newFly(boost));
     }
 
     function draw(){
@@ -140,99 +111,99 @@
 
       const mid  = energyFromBins(data, 18, 80);
       const high = energyFromBins(data, 80, 180);
+
       const g = parseFloat(gainEl.value);
-
       const energy = clamp01((mid*0.75 + high*0.95) * g);
-
-      // ✅ 배경: "무조건 검은색" + 아주 약한 잔상만
-      ctx.globalCompositeOperation = "source-over";
-      ctx.fillStyle = `rgba(0,0,0,${0.28 + (1-energy)*0.10})`;
-      ctx.fillRect(0,0,innerWidth,innerHeight);
+      const m = smoothstep(0.10, 0.75, energy);
 
       t += 0.016;
 
-      // ✅ 홍수는 하되 “화이트아웃”/“털” 방지: 양은 적당 + 스트로크 길이로 밀도 만들기
-      const emit = Math.floor(3 + 14 * smoothstep(0.10, 0.70, energy));
-      spawnStrokes(emit, energy);
+      // ✅ 배경은 "무조건 검정" + 약간의 잔상(너무 밝아지지 않게)
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgba(0,0,0,${0.35 + (1-m)*0.12})`;
+      ctx.fillRect(0,0,innerWidth,innerHeight);
 
-      // cap
-      if (S.length > 520) S.splice(0, S.length - 520);
+      // 파티클(반딧불이) 수: 음악이 차오를수록 조금 늘기
+      const target = Math.floor(70 + m*90);   // 70~160
+      ensureFlies(Math.min(MAX_FLIES, target), m);
 
-      // 오디오로 blur 펌핑(요구)
-      const blurPx = 0.6 + smoothstep(0.12, 0.80, energy) * 4.5;
+      // ✅ 블러 “좀 제발”: 전체 블러 강도를 음악으로 펌핑
+      const blurPx = 2 + m*10;                // 2~12
+      ctx.filter = `blur(${blurPx}px)`;
 
-      for (let i=S.length-1; i>=0; i--){
-        const s = S[i];
-        s.age++;
+      // 합성은 screen만 아주 약하게(화이트아웃 방지: 알파로 제어)
+      // screen은 불빛에만 사용하되, 배경은 이미 검정이라 안전
+      ctx.globalCompositeOperation = "screen";
 
-        const k = 1 - (s.age / s.life);
-        if (k <= 0 || s.x<-420 || s.x>innerWidth+420 || s.y<-420 || s.y>innerHeight+420){
-          S.splice(i,1);
+      for (let i=flies.length-1; i>=0; i--){
+        const f = flies[i];
+        f.age++;
+
+        // 오래된 애는 교체
+        if (f.age > f.life){
+          flies[i] = newFly(m);
           continue;
         }
 
-        const f = field(s.x, s.y, mid, high);
-
-        // 난류 줄이고 "큰 흐름 + 약간의 비틀림"
-        const twist = (high*0.25) * Math.sin(s.seed*0.00001 + t*2.2);
-
-        s.vx += f.fx*0.10 + twist*0.25;
-        s.vy += f.fy*0.10 - twist*0.25;
-
-        s.vx *= 0.989;
-        s.vy *= 0.989;
-
-        s.x += s.vx;
-        s.y += s.vy;
-
-        // pts
-        s.pts.push([s.x, s.y]);
-        const maxPts = 22 + Math.floor(energy*22);
-        if (s.pts.length > maxPts) s.pts.shift();
-
-        const [h,ss,l] = s.col;
-
-        // ✅ 흰색 방지: 밝기(l)를 낮게 유지 + 알파 제한
-        const alpha = (0.05 + energy*0.12) * (k*k);
-        const outerW = (s.w * (1.2 + energy*0.8));
-        const innerW = Math.max(1.0, outerW * 0.55);
-
-        // ---- Outer soft brush (glare 느낌) ----
-        ctx.save();
-        ctx.filter = `blur(${blurPx}px)`;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.shadowColor = `hsla(${h},${ss}%,${Math.min(68,l)}%,${alpha*0.55})`;
-        ctx.shadowBlur = 14 + energy*28;
-
-        ctx.strokeStyle = `hsla(${h},${ss}%,${Math.min(66,l+2)}%,${alpha*0.28})`;
-        ctx.lineWidth = outerW;
-
-        ctx.beginPath();
-        for (let j=0; j<s.pts.length; j++){
-          const [px,py] = s.pts[j];
-          if (j===0) ctx.moveTo(px,py);
-          else ctx.lineTo(px,py);
+        // 오디오가 올라가면 "갑자기 움직임" 확률 증가
+        const twitchProb = 0.004 + m*0.03;
+        if (Math.random() < twitchProb){
+          f.vx += (Math.random()-0.5) * (0.9 + m*2.0);
+          f.vy += (Math.random()-0.5) * (0.9 + m*2.0);
+          f.burst = Math.min(1, f.burst + 0.7); // 순간 번쩍
         }
-        ctx.stroke();
 
-        // ---- Inner core (선명한 리본) ----
-        ctx.filter = "none";
-        ctx.shadowBlur = 0;
+        // 부드러운 드리프트 + 약간의 감쇠
+        f.vx += (Math.sin(t*0.9 + f.phase)*0.004) * (0.5 + m*1.6);
+        f.vy += (Math.cos(t*0.8 + f.phase)*0.004) * (0.5 + m*1.6);
+        f.vx *= 0.94;
+        f.vy *= 0.94;
 
-        ctx.strokeStyle = `hsla(${h},${ss}%,${Math.min(62,l-2)}%,${alpha*0.75})`;
-        ctx.lineWidth = innerW;
+        f.x += f.vx;
+        f.y += f.vy;
 
+        // 화면 밖으로 나가면 워프
+        if (f.x < -40) f.x = innerWidth + 40;
+        if (f.x > innerWidth + 40) f.x = -40;
+        if (f.y < -40) f.y = innerHeight + 40;
+        if (f.y > innerHeight + 40) f.y = -40;
+
+        // 깜빡임: 기본 싸인 + high에서 더 촘촘하게(하이/미드 반영)
+        const blink = 0.5 + 0.5 * Math.sin(f.phase + t*(f.freq + high*2.6));
+        const shimmer = smoothstep(0.35, 1.0, blink); // 꺼졌다 켜졌다 확실하게
+
+        // burst는 서서히 사라짐
+        f.burst *= 0.90;
+
+        // 밝기/크기: 오디오 반영 (하이-미드에 반응)
+        const intensity = clamp01( (shimmer*0.55 + f.burst*0.7) * (0.35 + m*1.15) );
+        const r = f.baseR * (1.0 + intensity*3.0);
+
+        // 색: 너무 하얘지지 않게 L 제한
+        const L = Math.min(72, f.l + intensity*10);
+
+        // 실제 그리기(선 없음, 점/글로우만)
+        // 중심 코어
+        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.10 + intensity*0.22})`;
         ctx.beginPath();
-        for (let j=0; j<s.pts.length; j++){
-          const [px,py] = s.pts[j];
-          if (j===0) ctx.moveTo(px,py);
-          else ctx.lineTo(px,py);
-        }
-        ctx.stroke();
+        ctx.arc(f.x, f.y, r, 0, Math.PI*2);
+        ctx.fill();
 
-        ctx.restore();
+        // 외곽 글로우(두겹)
+        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.05 + intensity*0.12})`;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, r*2.1, 0, Math.PI*2);
+        ctx.fill();
+
+        ctx.fillStyle = `hsla(${f.h},${f.s}%,${L}%,${0.03 + intensity*0.08})`;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, r*3.6, 0, Math.PI*2);
+        ctx.fill();
       }
+
+      // 필터 원복
+      ctx.filter = "none";
+      ctx.globalCompositeOperation = "source-over";
     }
 
     // ✅ 오디오 캡처: 안정 버전 유지
@@ -243,7 +214,7 @@
         ac = new (window.AudioContext || window.webkitAudioContext)();
         analyser = ac.createAnalyser();
         analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.84;
+        analyser.smoothingTimeConstant = 0.86;
 
         gainNode = ac.createGain();
         gainNode.gain.value = 1.0;
@@ -262,10 +233,11 @@
 
         if (ac.state === 'suspended') await ac.resume();
 
-        // ✅ 강제 블랙 클리어
+        // 강제 블랙 클리어
         ctx.fillStyle = '#000';
         ctx.fillRect(0,0,innerWidth,innerHeight);
 
+        flies.length = 0;
         draw();
       } catch (e){
         console.error(e);
@@ -280,7 +252,7 @@
       if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
       if (ac){ ac.close(); ac = null; }
 
-      S.length = 0;
+      flies.length = 0;
 
       startBtn.disabled = false;
       stopBtn.disabled = true;
