@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tab Audio Visualizer — Particle Flood (Stable Capture)</title>
+  <title>Tab Audio Visualizer — Particle Flood (Chunky Glitch)</title>
   <style>
     html, body { margin:0; height:100%; background:#05060a; overflow:hidden; }
     #ui{
@@ -30,11 +30,12 @@
     <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.15"></label>
     <div class="hint">공유창에서 “탭 오디오 공유” 체크</div>
   </div>
+
   <canvas id="c"></canvas>
 
   <script>
-    const canvas = document.getElementById('c');
-    const ctx2d = canvas.getContext('2d'); // ✅ 오디오 안정성 우선: 기본 컨텍스트로
+    const canvas  = document.getElementById('c');
+    const ctx2d   = canvas.getContext('2d');
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
     const gainEl   = document.getElementById('gain');
@@ -42,25 +43,27 @@
     let ac, analyser, srcNode, gainNode, data;
     let stream, rafId;
 
+    let DPR = 1;
+
     // ===== Buffers (fastmosh + glare) =====
-    const buf = document.createElement('canvas');
+    const buf  = document.createElement('canvas');
     const bctx = buf.getContext('2d');
 
     const glow = document.createElement('canvas');
     const gctx = glow.getContext('2d');
 
-    function resizeAllBuffers(){
-      // 버퍼는 canvas 픽셀 크기와 동일해야 함
-      buf.width  = canvas.width;  buf.height  = canvas.height;
-      glow.width = canvas.width;  glow.height = canvas.height;
-    }
-
     function resize(){
-      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-      canvas.width  = Math.floor(innerWidth * dpr);
-      canvas.height = Math.floor(innerHeight * dpr);
-      ctx2d.setTransform(dpr,0,0,dpr,0,0);
-      resizeAllBuffers();
+      DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+      canvas.width  = Math.floor(innerWidth * DPR);
+      canvas.height = Math.floor(innerHeight * DPR);
+      ctx2d.setTransform(DPR,0,0,DPR,0,0);
+
+      buf.width  = canvas.width;  buf.height = canvas.height;
+      bctx.setTransform(DPR,0,0,DPR,0,0);
+
+      glow.width = canvas.width;  glow.height = canvas.height;
+      gctx.setTransform(DPR,0,0,DPR,0,0);
     }
     addEventListener('resize', resize);
     resize();
@@ -71,7 +74,6 @@
       return sum / (end - start) / 255;
     }
 
-    // ===== Utilities =====
     function clamp01(x){ return Math.max(0, Math.min(1, x)); }
     function smoothstep(a,b,x){ x=clamp01((x-a)/(b-a)); return x*x*(3-2*x); }
 
@@ -79,13 +81,12 @@
     const P = [];
     let t = 0;
 
-    // 고급 팔레트(원색 금지)
     const palette = [
-      [210, 22, 84], // icy lavender-blue
-      [185, 26, 78], // mint-cyan
-      [260, 18, 82], // soft violet
-      [330, 18, 80], // pale magenta
-      [35,  22, 82], // warm pearl
+      [210, 22, 84],
+      [185, 26, 78],
+      [260, 18, 82],
+      [330, 18, 80],
+      [35,  22, 82],
     ];
 
     function pickColor(seed, intensity){
@@ -99,28 +100,24 @@
     function spawn(n, energy, cx, cy){
       for(let i=0;i<n;i++){
         const seed = (Math.random()*1e9)|0;
-        const ang = Math.random()*Math.PI*2;
-        const rad = (Math.random()**0.6) * 180;
+        const ang  = Math.random()*Math.PI*2;
+        const rad  = (Math.random()**0.6) * 180;
         const x = cx + Math.cos(ang)*rad;
         const y = cy + Math.sin(ang)*rad;
 
-        const speed = 0.35 + energy*3.0;
+        const speed = 0.32 + energy*2.8;
         const vx = Math.cos(ang + (Math.random()-0.5)*0.9) * speed;
         const vy = Math.sin(ang + (Math.random()-0.5)*0.9) * speed;
 
-        const size = 0.8 + Math.random()*2.2 + energy*1.8;
-        const life = 40 + Math.random()*70 + energy*80;
+        const size = 0.8 + Math.random()*2.2 + energy*1.6;
+        const life = 44 + Math.random()*76 + energy*86;
 
-        const col = pickColor(seed, energy);
+        const col  = pickColor(seed, energy);
 
-        P.push({
-          x,y,vx,vy,size,life,seed,col,age:0,
-          trail: [[x,y]],
-        });
+        P.push({ x,y,vx,vy,size,life,seed,col,age:0, trail:[[x,y]] });
       }
     }
 
-    // 흐름장(벡터 필드)
     function field(x,y,mid,high){
       const nx = x/innerWidth  - 0.5;
       const ny = y/innerHeight - 0.5;
@@ -128,43 +125,51 @@
       const a = Math.sin(nx*5 + t*0.7) + Math.cos(ny*6 - t*0.6);
       const b = Math.cos(nx*7 - t*0.5) - Math.sin(ny*5 + t*0.8);
 
-      const swirl = 0.6 + high*2.4;
-      const drift = 0.2 + mid*1.6;
+      const swirl = 0.55 + high*2.1;
+      const drift = 0.18 + mid*1.4;
 
-      return {
-        fx: (a*swirl - ny*drift),
-        fy: (b*swirl + nx*drift),
-      };
+      return { fx: (a*swirl - ny*drift), fy: (b*swirl + nx*drift) };
+    }
+
+    // ===== Chunky Glitch State =====
+    let glitchPhase = 0;      // 0..1 진행도
+    let glitchHold  = 0;      // 지속 프레임
+    let glitchSeed  = 1;
+
+    function rand01(seed){
+      // 간단한 LCG
+      glitchSeed = (glitchSeed * 1664525 + 1013904223) >>> 0;
+      return (glitchSeed & 0x00ffffff) / 0x01000000;
+    }
+
+    function startChunkyGlitch(strength){
+      glitchSeed = ((Math.random()*1e9)|0) ^ (Date.now()|0);
+      glitchPhase = 0;
+      glitchHold = Math.floor(8 + strength*22); // ✅ 덩어리감: 오래 잡고 흔듦
     }
 
     function draw(){
       rafId = requestAnimationFrame(draw);
+
       analyser.getByteFrequencyData(data);
 
-      // bands
       const mid  = energyFromBins(data, 18, 80);
       const high = energyFromBins(data, 80, 180);
 
       const g = parseFloat(gainEl.value);
-
-      // 킥 금지: 하이/미드 중심 에너지
       const energy = clamp01((mid*0.65 + high*0.85) * g);
 
-      // 트레일 배경(조용할수록 잔상↑)
-      ctx2d.fillStyle = `rgba(5,6,10,${0.10 + (1-energy)*0.10})`;
+      ctx2d.fillStyle = `rgba(5,6,10,${0.12 + (1-energy)*0.10})`;
       ctx2d.fillRect(0,0,innerWidth,innerHeight);
 
       const cx = innerWidth/2, cy = innerHeight/2;
       t += 0.016;
 
-      // 방출량(파티클 홍수)
-      const emit = Math.floor(12 + 180 * smoothstep(0.08, 0.55, energy));
+      const emit = Math.floor(10 + 160 * smoothstep(0.08, 0.55, energy));
       spawn(emit, energy, cx, cy);
 
-      // 성능 상한
-      if (P.length > 4500) P.splice(0, P.length - 4500);
+      if (P.length > 4200) P.splice(0, P.length - 4200);
 
-      // 파티클 렌더: 밝기 누적
       ctx2d.globalCompositeOperation = "lighter";
 
       for (let i=P.length-1; i>=0; i--){
@@ -172,10 +177,10 @@
         p.age++;
 
         const f = field(p.x, p.y, mid, high);
-        const jitter = (high*0.6) * (Math.sin(p.seed*0.00001 + t*9) * 0.6);
+        const jitter = (high*0.55) * (Math.sin(p.seed*0.00001 + t*9) * 0.6);
 
-        p.vx += f.fx*0.06 + jitter*0.08;
-        p.vy += f.fy*0.06 - jitter*0.08;
+        p.vx += f.fx*0.06 + jitter*0.07;
+        p.vy += f.fy*0.06 - jitter*0.07;
 
         p.vx *= 0.985;
         p.vy *= 0.985;
@@ -183,32 +188,25 @@
         p.x += p.vx;
         p.y += p.vy;
 
-        // trail update
         p.trail.push([p.x, p.y]);
-        const maxTrail = Math.floor(10 + energy*28);
+        const maxTrail = Math.floor(12 + energy*26);
         if (p.trail.length > maxTrail) p.trail.shift();
 
-        // life
-        const life = p.life;
-        const k = 1 - (p.age / life);
+        const k = 1 - (p.age / p.life);
         if (k <= 0 || p.x<-240 || p.x>innerWidth+240 || p.y<-240 || p.y>innerHeight+240){
           P.splice(i,1);
           continue;
         }
 
         const [h,s,l] = p.col;
-        const alpha = (0.05 + energy*0.12) * (k*k);
-
-        // ===== Dual Stroke Ribbon =====
+        const alpha = (0.045 + energy*0.10) * (k*k);
         const tr = p.trail;
 
-        // outer soft stroke
-        const outerW = (1.8 + p.size*1.2) * (0.9 + energy*1.6);
-        ctx2d.strokeStyle = `hsla(${h},${s}%,${Math.min(92, l+8)}%,${alpha*0.55})`;
+        const outerW = (1.2 + p.size*0.9) * (0.8 + energy*1.1);
+        ctx2d.strokeStyle = `hsla(${h},${s}%,${Math.min(92, l+10)}%,${alpha*0.28})`;
         ctx2d.lineWidth = outerW;
         ctx2d.lineCap = "round";
         ctx2d.lineJoin = "round";
-
         ctx2d.beginPath();
         for (let j=0; j<tr.length; j++){
           const [tx,ty] = tr[j];
@@ -217,11 +215,9 @@
         }
         ctx2d.stroke();
 
-        // inner crisp stroke
-        const innerW = Math.max(0.8, outerW * 0.42);
-        ctx2d.strokeStyle = `hsla(${h},${s}%,${l}%,${alpha})`;
+        const innerW = Math.max(0.7, outerW * 0.44);
+        ctx2d.strokeStyle = `hsla(${h},${s}%,${l}%,${alpha*0.90})`;
         ctx2d.lineWidth = innerW;
-
         ctx2d.beginPath();
         for (let j=0; j<tr.length; j++){
           const [tx,ty] = tr[j];
@@ -229,71 +225,103 @@
           else ctx2d.lineTo(tx,ty);
         }
         ctx2d.stroke();
-
-        // head spec
-        ctx2d.fillStyle = `hsla(${h},${s}%,${l}%,${alpha*0.55})`;
-        ctx2d.beginPath();
-        ctx2d.arc(p.x, p.y, 0.6 + p.size*0.35, 0, Math.PI*2);
-        ctx2d.fill();
       }
 
       ctx2d.globalCompositeOperation = "source-over";
 
-      // ===== fastmosh / glitch (mid/high reactive) =====
+      // ===== fastmosh base =====
       const m = smoothstep(0.10, 0.65, energy);
-      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
 
-      // buffer accumulate (frame-ish hold)
-      if (Math.random() < 0.85) {
-        bctx.globalAlpha = 0.92 + m*0.06;
+      if (Math.random() < 0.86) {
+        bctx.globalAlpha = 0.86 + m*0.05;
         bctx.drawImage(canvas, 0, 0);
         bctx.globalAlpha = 1.0;
       }
 
-      // reproject with wobble
-      const wob = (Math.random()-0.5) * 18 * m;
-      ctx2d.globalAlpha = 0.55 + m*0.25;
+      const wob = (Math.random()-0.5) * 16 * m;
+      ctx2d.globalAlpha = 0.50 + m*0.22;
       ctx2d.drawImage(buf, wob, -wob);
       ctx2d.globalAlpha = 1.0;
 
-      // glitch slices
-      const slices = Math.floor(3 + high*18);
-      for(let i=0;i<slices;i++){
-        const y = Math.random()*innerHeight;
-        const hgt = 2 + Math.random()*(8 + high*40);
-        const xShift = (Math.random()-0.5) * (30 + high*220);
-
-        ctx2d.drawImage(canvas,
-          0, y*dpr, canvas.width, hgt*dpr,
-          xShift, y, innerWidth, hgt
-        );
+      // ===== Chunky Glitch Trigger (하이/미드가 고르게 찰 때만) =====
+      // "자글자글" 대신 "덩어리 이벤트"로: 가끔 한 번 크게 잡고 휘저음
+      const trigger = smoothstep(0.18, 0.62, energy) * smoothstep(0.08, 0.40, high);
+      if (glitchHold <= 0 && Math.random() < (0.008 + trigger*0.020)) {
+        startChunkyGlitch(trigger);
       }
 
-      // subtle chroma-ish split (약하게)
-      if (m > 0.15 && Math.random() < 0.6){
-        const shift = (1 + high*3) * m;
-        ctx2d.globalAlpha = 0.12 + m*0.10;
+      // ===== Chunky Glitch Render =====
+      if (glitchHold > 0){
+        glitchHold--;
+        glitchPhase = Math.min(1, glitchPhase + 1 / Math.max(1, glitchHold + 1));
+
+        // ease in/out: 확대됐다가 줄어드는 맛
+        const e = Math.sin(glitchPhase * Math.PI); // 0->1->0
+        const strength = (0.10 + 0.90*e) * (0.35 + trigger*0.85);
+
+        // 1) BIG BLOCK ZOOM (랜덤 박스 영역을 확대/축소해서 재투영)
+        const blocks = 1 + Math.floor(strength * 3);
+        for (let b=0; b<blocks; b++){
+          const bw = innerWidth  * (0.18 + rand01()*0.28);
+          const bh = innerHeight * (0.14 + rand01()*0.24);
+          const sx = rand01() * (innerWidth  - bw);
+          const sy = rand01() * (innerHeight - bh);
+
+          const scale = 1 + (strength * (0.10 + rand01()*0.55)); // 확대
+          const dx = sx + (rand01()-0.5) * innerWidth  * (0.10*strength);
+          const dy = sy + (rand01()-0.5) * innerHeight * (0.10*strength);
+
+          ctx2d.save();
+          ctx2d.globalAlpha = 0.35 + strength*0.35;
+          ctx2d.globalCompositeOperation = "screen";
+          ctx2d.translate(dx + bw/2, dy + bh/2);
+          ctx2d.scale(scale, scale);
+          ctx2d.translate(-(bw/2), -(bh/2));
+          ctx2d.drawImage(canvas, sx, sy, bw, bh, 0, 0, bw, bh);
+          ctx2d.restore();
+        }
+
+        // 2) CHUNK SHIFT (두꺼운 슬라이스 몇 개만 — 자글 금지)
+        const thick = 1 + Math.floor(strength * 4);
+        for (let i=0; i<thick; i++){
+          const isH = rand01() < 0.55;
+          if (isH){
+            const y = rand01()*innerHeight;
+            const hgt = 18 + rand01()*(90 + 180*strength);
+            const xShift = (rand01()-0.5) * (120 + 520*strength);
+            ctx2d.globalAlpha = 0.22 + 0.28*strength;
+            ctx2d.drawImage(canvas, 0, y, innerWidth, hgt, xShift, y, innerWidth, hgt);
+          } else {
+            const x = rand01()*innerWidth;
+            const wdt = 18 + rand01()*(90 + 180*strength);
+            const yShift = (rand01()-0.5) * (120 + 520*strength);
+            ctx2d.globalAlpha = 0.18 + 0.26*strength;
+            ctx2d.drawImage(canvas, x, 0, wdt, innerHeight, x, yShift, wdt, innerHeight);
+          }
+          ctx2d.globalAlpha = 1.0;
+        }
+
+        // 3) SUBTLE CHROMA PULSE (덩어리 이벤트 중에만)
+        const shift = (1.5 + 9*strength);
+        ctx2d.globalAlpha = 0.06 + 0.10*strength;
         ctx2d.drawImage(canvas,  shift, 0);
         ctx2d.drawImage(canvas, -shift, 0);
         ctx2d.globalAlpha = 1.0;
       }
 
-      // ===== GLARE / BLOOM (audio-reactive blur) =====
-      const blurPx = 2 + m*10;
-      const glowAlpha = 0.10 + m*0.28;
+      // ===== GLARE / BLOOM =====
+      const blurPx = 1 + m*5;
+      const glowAlpha = 0.04 + m*0.14;
 
-      // copy frame -> glow buffer
-      gctx.clearRect(0,0,glow.width,glow.height);
+      gctx.clearRect(0,0,innerWidth,innerHeight);
       gctx.globalAlpha = 1.0;
       gctx.drawImage(canvas, 0, 0);
 
-      // bright-pass-ish (cheap)
       gctx.globalCompositeOperation = "source-in";
-      gctx.fillStyle = "rgba(255,255,255,0.85)";
+      gctx.fillStyle = "rgba(255,255,255,0.75)";
       gctx.fillRect(0,0,innerWidth,innerHeight);
       gctx.globalCompositeOperation = "source-over";
 
-      // blend back with blur
       ctx2d.save();
       ctx2d.globalCompositeOperation = "screen";
       ctx2d.globalAlpha = glowAlpha;
@@ -301,14 +329,9 @@
       ctx2d.drawImage(glow, 0, 0, innerWidth, innerHeight);
       ctx2d.filter = "none";
       ctx2d.restore();
-
-      // tiny HUD (optional)
-      ctx2d.fillStyle = `rgba(230,235,255,${0.06 + energy*0.12})`;
-      ctx2d.font = '600 13px system-ui, -apple-system, Segoe UI';
-      ctx2d.fillText(`mid ${mid.toFixed(2)}  high ${high.toFixed(2)}  energy ${energy.toFixed(2)}  particles ${P.length}`, 18, innerHeight-18);
     }
 
-    // ✅ "아까 잘 되던" 오디오 캡처 로직 그대로
+    // ✅ 오디오 캡처는 안정 버전 유지
     async function start(){
       try{
         stream = await navigator.mediaDevices.getDisplayMedia({
@@ -338,6 +361,9 @@
 
         if (ac.state === 'suspended') await ac.resume();
 
+        ctx2d.fillStyle = '#05060a';
+        ctx2d.fillRect(0,0,innerWidth,innerHeight);
+
         draw();
       } catch (e){
         console.error(e);
@@ -359,6 +385,8 @@
       }
 
       P.length = 0;
+      glitchHold = 0;
+      glitchPhase = 0;
 
       startBtn.disabled = false;
       stopBtn.disabled = true;
