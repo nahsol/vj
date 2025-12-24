@@ -3,38 +3,38 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tab Audio Visualizer</title>
+  <title>Tab Audio Visualizer — Particle Flood</title>
   <style>
     html, body { margin:0; height:100%; background:#05060a; overflow:hidden; }
-    #ui {
+    #ui{
       position:fixed; top:16px; left:16px; z-index:10;
       display:flex; gap:10px; align-items:center;
       background:rgba(10,12,18,.55); border:1px solid rgba(255,255,255,.08);
       padding:10px 12px; border-radius:14px; backdrop-filter: blur(8px);
       color:#e8eaf0; font: 14px/1.2 system-ui, -apple-system, Segoe UI, Roboto;
     }
-    button {
+    button{
       border:0; border-radius:12px; padding:10px 12px;
       background:#1b2140; color:#fff; cursor:pointer;
     }
-    button:disabled { opacity:.5; cursor:not-allowed; }
-    input[type="range"]{ width:140px; }
-    canvas { display:block; width:100vw; height:100vh; }
-    .hint { opacity:.8; font-size:12px; }
+    button:disabled{ opacity:.5; cursor:not-allowed; }
+    input[type="range"]{ width:160px; }
+    canvas{ display:block; width:100vw; height:100vh; }
+    .hint{ opacity:.85; font-size:12px; }
   </style>
 </head>
 <body>
   <div id="ui">
     <button id="startBtn">탭 오디오 연결</button>
     <button id="stopBtn" disabled>정지</button>
-    <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.1"></label>
-    <div class="hint">공유창에서 “탭 오디오 공유” 체크!</div>
+    <label>감도 <input id="gain" type="range" min="0" max="2.5" step="0.01" value="1.15"></label>
+    <div class="hint">공유창에서 “탭 오디오 공유” 체크</div>
   </div>
   <canvas id="c"></canvas>
 
   <script>
     const canvas = document.getElementById('c');
-    const ctx2d = canvas.getContext('2d');
+    const ctx2d = canvas.getContext('2d', { alpha: false });
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
     const gainEl   = document.getElementById('gain');
@@ -44,9 +44,10 @@
 
     function resize(){
       const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-      canvas.width = Math.floor(innerWidth * dpr);
+      canvas.width  = Math.floor(innerWidth * dpr);
       canvas.height = Math.floor(innerHeight * dpr);
       ctx2d.setTransform(dpr,0,0,dpr,0,0);
+      resizeAll();
     }
     addEventListener('resize', resize);
     resize();
@@ -54,72 +55,264 @@
     function energyFromBins(arr, start, end){
       let sum = 0;
       for (let i=start; i<end; i++) sum += arr[i];
-      return sum / (end - start) / 255; // 0..1
+      return sum / (end - start) / 255;
+    }
+
+    // ===== Utilities =====
+    function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+    function smoothstep(a,b,x){ x=clamp01((x-a)/(b-a)); return x*x*(3-2*x); }
+
+    // ===== Particle Flood =====
+    const P = [];
+    let t = 0;
+
+    // 고급 팔레트 (촌스런 원색 금지)
+    const palette = [
+      [210, 22, 84], // icy lavender-blue
+      [185, 26, 78], // mint-cyan
+      [260, 18, 82], // soft violet
+      [330, 18, 80], // pale magenta
+      [35,  22, 82], // warm pearl
+    ];
+
+    function pickColor(seed, intensity){
+      const c = palette[seed % palette.length];
+      const h = (c[0] + (seed*17)%12 - 6 + intensity*6);
+      const s = Math.min(35, c[1] + intensity*10);   // 채도 상한
+      const l = Math.max(70, c[2] - intensity*8);    // 명도 하한
+      return [h, s, l];
+    }
+
+    function spawn(n, energy, cx, cy){
+      for(let i=0;i<n;i++){
+        const seed = (Math.random()*1e9)|0;
+        const ang = Math.random()*Math.PI*2;
+        const rad = (Math.random()**0.6) * 180;
+        const x = cx + Math.cos(ang)*rad;
+        const y = cy + Math.sin(ang)*rad;
+
+        const speed = 0.35 + energy*3.0;
+        const vx = Math.cos(ang + (Math.random()-0.5)*0.9) * speed;
+        const vy = Math.sin(ang + (Math.random()-0.5)*0.9) * speed;
+
+        const size = 0.8 + Math.random()*2.2 + energy*1.8;
+        const life = 40 + Math.random()*70 + energy*80;
+
+        const col = pickColor(seed, energy);
+
+        P.push({
+          x,y,vx,vy,size,life,seed,col,age:0,
+          trail: [[x,y]],
+        });
+      }
+    }
+
+    // 흐름장(벡터 필드)
+    function field(x,y,mid,high){
+      const nx = x/innerWidth  - 0.5;
+      const ny = y/innerHeight - 0.5;
+
+      const a = Math.sin(nx*5 + t*0.7) + Math.cos(ny*6 - t*0.6);
+      const b = Math.cos(nx*7 - t*0.5) - Math.sin(ny*5 + t*0.8);
+
+      const swirl = 0.6 + high*2.4;
+      const drift = 0.2 + mid*1.6;
+
+      return {
+        fx: (a*swirl - ny*drift),
+        fy: (b*swirl + nx*drift),
+      };
+    }
+
+    // ===== Buffers (fastmosh + glare) =====
+    const buf = document.createElement('canvas');
+    const bctx = buf.getContext('2d', { alpha: false });
+
+    const glow = document.createElement('canvas');
+    const gctx = glow.getContext('2d', { alpha: false });
+
+    function resizeAll(){
+      // canvas는 resize()에서 이미 맞춤. 여기서는 버퍼만.
+      buf.width = canvas.width;  buf.height = canvas.height;
+      glow.width = canvas.width; glow.height = canvas.height;
     }
 
     function draw(){
       rafId = requestAnimationFrame(draw);
-
       analyser.getByteFrequencyData(data);
 
-      // bands (rough)
+      // bands
       const bass = energyFromBins(data, 2, 18);
       const mid  = energyFromBins(data, 18, 80);
       const high = energyFromBins(data, 80, 180);
 
       const g = parseFloat(gainEl.value);
 
-      // background fade (trail)
-      ctx2d.fillStyle = `rgba(5,6,10,0.16)`;
+      // 킥 금지: 하이/미드 메인 에너지
+      const energy = clamp01((mid*0.65 + high*0.85) * g);
+
+      // 트레일 배경: 조용할수록 잔상 더 남김
+      ctx2d.fillStyle = `rgba(5,6,10,${0.10 + (1-energy)*0.10})`;
       ctx2d.fillRect(0,0,innerWidth,innerHeight);
 
       const cx = innerWidth/2, cy = innerHeight/2;
 
-      // Kick-ish pulse circle
-      const r = 60 + Math.pow(bass * g, 0.7) * 320;
-      ctx2d.beginPath();
-      ctx2d.arc(cx, cy, r, 0, Math.PI*2);
-      ctx2d.strokeStyle = `rgba(240,245,255,${0.10 + bass*0.35})`;
-      ctx2d.lineWidth = 2 + bass*10*g;
-      ctx2d.stroke();
+      t += 0.016;
 
-      // Spectrum bars (bottom)
-      const bars = 128;
-      const step = Math.floor(data.length / bars);
-      const w = innerWidth / bars;
+      // 방출량(파티클 홍수)
+      const emit = Math.floor(12 + 180 * smoothstep(0.08, 0.55, energy));
+      spawn(emit, energy, cx, cy);
 
-      for (let i=0; i<bars; i++){
-        const v = data[i*step] / 255;
-        const h = Math.pow(v, 1.3) * innerHeight * 0.45 * g;
+      // 성능 상한
+      if (P.length > 4500) P.splice(0, P.length - 4500);
 
-        // subtle “neon-ish” look without hard-coded fancy palettes
-        const a = 0.12 + v*0.45;
-        ctx2d.fillStyle = `rgba(230,235,255,${a})`;
-        ctx2d.fillRect(i*w, innerHeight - h, Math.max(1, w-2), h);
+      // 파티클 렌더: 밝기 누적
+      ctx2d.globalCompositeOperation = "lighter";
+
+      for (let i=P.length-1; i>=0; i--){
+        const p = P[i];
+        p.age++;
+
+        const f = field(p.x, p.y, mid, high);
+        const jitter = (high*0.6) * (Math.sin(p.seed*0.00001 + t*9) * 0.6);
+
+        p.vx += f.fx*0.06 + jitter*0.08;
+        p.vy += f.fy*0.06 - jitter*0.08;
+
+        p.vx *= 0.985;
+        p.vy *= 0.985;
+
+        p.x += p.vx;
+        p.y += p.vy;
+
+        // trail update
+        p.trail.push([p.x, p.y]);
+        const maxTrail = Math.floor(10 + energy*28);
+        if (p.trail.length > maxTrail) p.trail.shift();
+
+        // life
+        const life = p.life;
+        const k = 1 - (p.age / life);
+        if (k <= 0 || p.x<-240 || p.x>innerWidth+240 || p.y<-240 || p.y>innerHeight+240){
+          P.splice(i,1);
+          continue;
+        }
+
+        const [h,s,l] = p.col;
+        const alpha = (0.05 + energy*0.12) * (k*k);
+
+        // ===== Dual Stroke Ribbon =====
+        // 1) outer soft stroke
+        const outerW = (1.8 + p.size*1.2) * (0.9 + energy*1.6);
+        ctx2d.strokeStyle = `hsla(${h},${s}%,${Math.min(92, l+8)}%,${alpha*0.55})`;
+        ctx2d.lineWidth = outerW;
+        ctx2d.lineCap = "round";
+        ctx2d.lineJoin = "round";
+
+        ctx2d.beginPath();
+        const tr = p.trail;
+        for (let j=0; j<tr.length; j++){
+          const [tx,ty] = tr[j];
+          if (j===0) ctx2d.moveTo(tx,ty);
+          else ctx2d.lineTo(tx,ty);
+        }
+        ctx2d.stroke();
+
+        // 2) inner crisp stroke
+        const innerW = Math.max(0.8, outerW * 0.42);
+        ctx2d.strokeStyle = `hsla(${h},${s}%,${l}%,${alpha})`;
+        ctx2d.lineWidth = innerW;
+
+        ctx2d.beginPath();
+        for (let j=0; j<tr.length; j++){
+          const [tx,ty] = tr[j];
+          if (j===0) ctx2d.moveTo(tx,ty);
+          else ctx2d.lineTo(tx,ty);
+        }
+        ctx2d.stroke();
+
+        // head spec
+        ctx2d.fillStyle = `hsla(${h},${s}%,${l}%,${alpha*0.55})`;
+        ctx2d.beginPath();
+        ctx2d.arc(p.x, p.y, 0.6 + p.size*0.35, 0, Math.PI*2);
+        ctx2d.fill();
       }
 
-      // little “glitch dust”
-      const dust = Math.floor(40 + high*160*g);
-      for (let i=0; i<dust; i++){
-        const x = Math.random()*innerWidth;
+      ctx2d.globalCompositeOperation = "source-over";
+
+      // ===== fastmosh / glitch (mid/high reactive) =====
+      const m = smoothstep(0.10, 0.65, energy);
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+      // buffer accumulate (frame-ish hold)
+      if (Math.random() < 0.85) {
+        bctx.globalAlpha = 0.92 + m*0.06;
+        bctx.drawImage(canvas, 0, 0);
+        bctx.globalAlpha = 1.0;
+      }
+
+      // reproject with wobble
+      const wob = (Math.random()-0.5) * 18 * m;
+      ctx2d.globalAlpha = 0.55 + m*0.25;
+      ctx2d.drawImage(buf, wob, -wob);
+      ctx2d.globalAlpha = 1.0;
+
+      // glitch slices
+      const slices = Math.floor(3 + high*18);
+      for(let i=0;i<slices;i++){
         const y = Math.random()*innerHeight;
-        const s = 1 + Math.random()*2.2;
-        const a = 0.05 + Math.random()*0.18 + high*0.25;
-        ctx2d.fillStyle = `rgba(255,255,255,${a})`;
-        ctx2d.fillRect(x,y,s,s);
+        const hgt = 2 + Math.random()*(8 + high*40);
+        const xShift = (Math.random()-0.5) * (30 + high*220);
+
+        ctx2d.drawImage(canvas,
+          0, y*dpr, canvas.width, hgt*dpr,
+          xShift, y, innerWidth, hgt
+        );
       }
 
-      // center text vibe
-      ctx2d.fillStyle = `rgba(230,235,255,${0.08 + mid*0.18})`;
-      ctx2d.font = '600 14px system-ui, -apple-system, Segoe UI';
-      ctx2d.fillText(`bass ${bass.toFixed(2)}  mid ${mid.toFixed(2)}  high ${high.toFixed(2)}`, 18, innerHeight-18);
+      // subtle chroma-ish split (약하게)
+      if (m > 0.15 && Math.random() < 0.6){
+        const shift = (1 + high*3) * m;
+        ctx2d.globalAlpha = 0.12 + m*0.10;
+        ctx2d.drawImage(canvas,  shift, 0);
+        ctx2d.drawImage(canvas, -shift, 0);
+        ctx2d.globalAlpha = 1.0;
+      }
+
+      // ===== GLARE / BLOOM (audio-reactive blur) =====
+      const blurPx = 2 + m*10;
+      const glowAlpha = 0.10 + m*0.28;
+
+      // copy frame -> glow buffer
+      gctx.clearRect(0,0,glow.width,glow.height);
+      gctx.globalAlpha = 1.0;
+      gctx.drawImage(canvas, 0, 0);
+
+      // bright-pass-ish (cheap)
+      gctx.globalCompositeOperation = "source-in";
+      gctx.fillStyle = "rgba(255,255,255,0.85)";
+      gctx.fillRect(0,0,innerWidth,innerHeight);
+      gctx.globalCompositeOperation = "source-over";
+
+      // blend back with blur
+      ctx2d.save();
+      ctx2d.globalCompositeOperation = "screen";
+      ctx2d.globalAlpha = glowAlpha;
+      ctx2d.filter = `blur(${blurPx}px)`;
+      ctx2d.drawImage(glow, 0, 0, innerWidth, innerHeight);
+      ctx2d.filter = "none";
+      ctx2d.restore();
+
+      // small HUD (optional)
+      ctx2d.fillStyle = `rgba(230,235,255,${0.06 + energy*0.12})`;
+      ctx2d.font = '600 13px system-ui, -apple-system, Segoe UI';
+      ctx2d.fillText(`mid ${mid.toFixed(2)}  high ${high.toFixed(2)}  energy ${energy.toFixed(2)}  particles ${P.length}`, 18, innerHeight-18);
     }
 
     async function start(){
       try{
-        // 탭 오디오 캡처: 사용자 선택 + 권한 필수
         stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true, // 필요 없으면 false도 되지만, 브라우저마다 오디오만이 제한될 수 있음
+          video: true,
           audio: true
         });
 
@@ -140,17 +333,19 @@
         startBtn.disabled = true;
         stopBtn.disabled = false;
 
-        // 스트림이 끊기면 자동 종료
         const [vtrack] = stream.getVideoTracks();
         if (vtrack) vtrack.onended = stop;
 
-        // 사파리/크롬 자동재생 정책 회피용: 사용자 제스처 이후라 OK
         if (ac.state === 'suspended') await ac.resume();
+
+        // clear
+        ctx2d.fillStyle = '#05060a';
+        ctx2d.fillRect(0,0,innerWidth,innerHeight);
 
         draw();
       } catch (e){
         console.error(e);
-        alert('캡처를 시작하지 못했어. 공유창에서 "탭 오디오 공유" 체크했고, 탭을 선택했는지 확인해줘!');
+        alert('캡처 시작 실패. “탭 오디오 공유” 체크 + 탭 선택 확인!');
       }
     }
 
@@ -167,10 +362,12 @@
         ac = null;
       }
 
+      // reset particles
+      P.length = 0;
+
       startBtn.disabled = false;
       stopBtn.disabled = true;
 
-      // clear screen
       ctx2d.fillStyle = '#05060a';
       ctx2d.fillRect(0,0,innerWidth,innerHeight);
     }
