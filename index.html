@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tab Audio Visualizer — Particle Flood</title>
+  <title>Tab Audio Visualizer — Particle Flood (Stable Capture)</title>
   <style>
     html, body { margin:0; height:100%; background:#05060a; overflow:hidden; }
     #ui{
@@ -34,7 +34,7 @@
 
   <script>
     const canvas = document.getElementById('c');
-    const ctx2d = canvas.getContext('2d', { alpha: false });
+    const ctx2d = canvas.getContext('2d'); // ✅ 오디오 안정성 우선: 기본 컨텍스트로
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
     const gainEl   = document.getElementById('gain');
@@ -42,12 +42,25 @@
     let ac, analyser, srcNode, gainNode, data;
     let stream, rafId;
 
+    // ===== Buffers (fastmosh + glare) =====
+    const buf = document.createElement('canvas');
+    const bctx = buf.getContext('2d');
+
+    const glow = document.createElement('canvas');
+    const gctx = glow.getContext('2d');
+
+    function resizeAllBuffers(){
+      // 버퍼는 canvas 픽셀 크기와 동일해야 함
+      buf.width  = canvas.width;  buf.height  = canvas.height;
+      glow.width = canvas.width;  glow.height = canvas.height;
+    }
+
     function resize(){
       const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
       canvas.width  = Math.floor(innerWidth * dpr);
       canvas.height = Math.floor(innerHeight * dpr);
       ctx2d.setTransform(dpr,0,0,dpr,0,0);
-      resizeAll();
+      resizeAllBuffers();
     }
     addEventListener('resize', resize);
     resize();
@@ -66,7 +79,7 @@
     const P = [];
     let t = 0;
 
-    // 고급 팔레트 (촌스런 원색 금지)
+    // 고급 팔레트(원색 금지)
     const palette = [
       [210, 22, 84], // icy lavender-blue
       [185, 26, 78], // mint-cyan
@@ -78,8 +91,8 @@
     function pickColor(seed, intensity){
       const c = palette[seed % palette.length];
       const h = (c[0] + (seed*17)%12 - 6 + intensity*6);
-      const s = Math.min(35, c[1] + intensity*10);   // 채도 상한
-      const l = Math.max(70, c[2] - intensity*8);    // 명도 하한
+      const s = Math.min(35, c[1] + intensity*10);
+      const l = Math.max(70, c[2] - intensity*8);
       return [h, s, l];
     }
 
@@ -124,39 +137,24 @@
       };
     }
 
-    // ===== Buffers (fastmosh + glare) =====
-    const buf = document.createElement('canvas');
-    const bctx = buf.getContext('2d', { alpha: false });
-
-    const glow = document.createElement('canvas');
-    const gctx = glow.getContext('2d', { alpha: false });
-
-    function resizeAll(){
-      // canvas는 resize()에서 이미 맞춤. 여기서는 버퍼만.
-      buf.width = canvas.width;  buf.height = canvas.height;
-      glow.width = canvas.width; glow.height = canvas.height;
-    }
-
     function draw(){
       rafId = requestAnimationFrame(draw);
       analyser.getByteFrequencyData(data);
 
       // bands
-      const bass = energyFromBins(data, 2, 18);
       const mid  = energyFromBins(data, 18, 80);
       const high = energyFromBins(data, 80, 180);
 
       const g = parseFloat(gainEl.value);
 
-      // 킥 금지: 하이/미드 메인 에너지
+      // 킥 금지: 하이/미드 중심 에너지
       const energy = clamp01((mid*0.65 + high*0.85) * g);
 
-      // 트레일 배경: 조용할수록 잔상 더 남김
+      // 트레일 배경(조용할수록 잔상↑)
       ctx2d.fillStyle = `rgba(5,6,10,${0.10 + (1-energy)*0.10})`;
       ctx2d.fillRect(0,0,innerWidth,innerHeight);
 
       const cx = innerWidth/2, cy = innerHeight/2;
-
       t += 0.016;
 
       // 방출량(파티클 홍수)
@@ -202,7 +200,9 @@
         const alpha = (0.05 + energy*0.12) * (k*k);
 
         // ===== Dual Stroke Ribbon =====
-        // 1) outer soft stroke
+        const tr = p.trail;
+
+        // outer soft stroke
         const outerW = (1.8 + p.size*1.2) * (0.9 + energy*1.6);
         ctx2d.strokeStyle = `hsla(${h},${s}%,${Math.min(92, l+8)}%,${alpha*0.55})`;
         ctx2d.lineWidth = outerW;
@@ -210,7 +210,6 @@
         ctx2d.lineJoin = "round";
 
         ctx2d.beginPath();
-        const tr = p.trail;
         for (let j=0; j<tr.length; j++){
           const [tx,ty] = tr[j];
           if (j===0) ctx2d.moveTo(tx,ty);
@@ -218,7 +217,7 @@
         }
         ctx2d.stroke();
 
-        // 2) inner crisp stroke
+        // inner crisp stroke
         const innerW = Math.max(0.8, outerW * 0.42);
         ctx2d.strokeStyle = `hsla(${h},${s}%,${l}%,${alpha})`;
         ctx2d.lineWidth = innerW;
@@ -303,12 +302,13 @@
       ctx2d.filter = "none";
       ctx2d.restore();
 
-      // small HUD (optional)
+      // tiny HUD (optional)
       ctx2d.fillStyle = `rgba(230,235,255,${0.06 + energy*0.12})`;
       ctx2d.font = '600 13px system-ui, -apple-system, Segoe UI';
       ctx2d.fillText(`mid ${mid.toFixed(2)}  high ${high.toFixed(2)}  energy ${energy.toFixed(2)}  particles ${P.length}`, 18, innerHeight-18);
     }
 
+    // ✅ "아까 잘 되던" 오디오 캡처 로직 그대로
     async function start(){
       try{
         stream = await navigator.mediaDevices.getDisplayMedia({
@@ -338,14 +338,10 @@
 
         if (ac.state === 'suspended') await ac.resume();
 
-        // clear
-        ctx2d.fillStyle = '#05060a';
-        ctx2d.fillRect(0,0,innerWidth,innerHeight);
-
         draw();
       } catch (e){
         console.error(e);
-        alert('캡처 시작 실패. “탭 오디오 공유” 체크 + 탭 선택 확인!');
+        alert('캡처 시작 실패. 공유창에서 "탭" 선택 + "탭 오디오 공유" 체크 확인!');
       }
     }
 
@@ -362,7 +358,6 @@
         ac = null;
       }
 
-      // reset particles
       P.length = 0;
 
       startBtn.disabled = false;
